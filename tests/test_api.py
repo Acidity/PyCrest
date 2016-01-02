@@ -249,6 +249,12 @@ class TestApi(unittest.TestCase):
             eve = pycrest.EVE(cache_dir='/cachedir')
             eve()
 
+            with mock.patch('time.time') as mock_time:
+                mock_time.return_value = 0
+                self.assertEqual(eve.marketData().expires, 300)
+
+                mock_time.return_value = 100000000
+                self.assertEqual(eve.marketData().expires, 100000300)
 
             testing = pycrest.EVE(testing=True)
             self.assertEqual(testing._public_endpoint, "http://public-crest-sisi.testeveonline.com/")
