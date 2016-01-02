@@ -143,7 +143,7 @@ class APIConnection(object):
         cached = self.cache.get(key)
         if cached and cached['expires'] > time.time():
             logger.debug('Cache hit for resource %s (params=%s)', resource, prms)
-            return cached['payload']
+            return cached['payload'], cached['expires']
         elif cached:
             logger.debug('Cache stale for resource %s (params=%s)', resource, prms)
             self.cache.invalidate(key)
@@ -160,10 +160,11 @@ class APIConnection(object):
         # cache result
         key = (resource, frozenset(self._session.headers.items()), frozenset(prms.items()))
         expires = self._get_expires(res)
+        expiration_time = time.time() + expires
         if expires > 0:
-            self.cache.put(key, {'expires': time.time() + expires, 'payload': ret})
+            self.cache.put(key, {'expires': expiration_time, 'payload': ret})
 
-        return ret
+        return ret, expiration_time
 
     def _get_expires(self, response):
         if 'Cache-Control' not in response.headers:
@@ -198,7 +199,8 @@ class EVE(APIConnection):
 
     def __call__(self):
         if not self._data:
-            self._data = APIObject(self.get(self._endpoint), self)
+            data, expiration_time = self.get(self._endpoint)
+            self._data = APIObject(data, expiration_time, self)
         return self._data
 
     def __getattr__(self, item):
@@ -265,14 +267,10 @@ class AuthedConnection(EVE):
         self._endpoint = endpoint
         self._session.headers.update({"Authorization": "Bearer %s" % self.token})
 
-    def __call__(self):
-        if not self._data:
-            self._data = APIObject(self.get(self._endpoint), self)
-        return self._data
-
     def whoami(self):
         if 'whoami' not in self._cache:
-            self._cache['whoami'] = self.get("https://login.eveonline.com/oauth/verify")
+            data, expiration_time = self.get("https://login.eveonline.com/oauth/verify")
+            self._cache['whoami'] = data
         return self._cache['whoami']
 
     def refresh(self):
@@ -289,12 +287,13 @@ class AuthedConnection(EVE):
 
 
 class APIObject(object):
-    def __init__(self, parent, connection):
+    def __init__(self, parent, expires, connection):
         self._dict = {}
         self.connection = connection
+        self.expires = expires
         for k, v in parent.items():
             if type(v) is dict:
-                self._dict[k] = APIObject(v, connection)
+                self._dict[k] = APIObject(v, self.expires, connection)
             elif type(v) is list:
                 self._dict[k] = self._wrap_list(v)
             else:
@@ -304,7 +303,7 @@ class APIObject(object):
         new = []
         for item in list_:
             if type(item) is dict:
-                new.append(APIObject(item, self.connection))
+                new.append(APIObject(item, self.expires, self.connection))
             elif type(item) is list:
                 new.append(self._wrap_list(item))
             else:
@@ -319,7 +318,8 @@ class APIObject(object):
     def __call__(self, **kwargs):
         # Caching is now handled by APIConnection
         if 'href' in self._dict:
-            return APIObject(self.connection.get(self._dict['href'], params=kwargs), self.connection)
+            data, expiration_time = self.connection.get(self._dict['href'], params=kwargs)
+            return APIObject(data, expiration_time, self.connection)
         else:
             return self
 
